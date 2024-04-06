@@ -1,5 +1,4 @@
-use std::io;
-use std::io::{Read, Write};
+use std::io::{Read, Write, Error};
 use std::net::TcpStream;
 
 // response from a 5-channel LEDENET controller:
@@ -26,24 +25,32 @@ fn get_checksum(buf: &[u8]) -> u8 {
     buf.iter().fold(0u64, |a, b| a + (*b as u64)) as u8
 }
 
-fn get_info(mut stream: impl Read + Write) -> Result<[u8; 14], io::Error> {
-    let mut query_buffer: Vec<u8> = vec![];
-    query_buffer.push(0x81);
-    query_buffer.push(0x8A);
-    query_buffer.push(0x8B);
-    query_buffer.push(get_checksum(&query_buffer));
-    stream.write(&query_buffer)?;
+fn get_state(mut stream: impl Read + Write) -> Result<[u8; 14], Error> {
+    let mut query_buf: Vec<u8> = vec![];
+    query_buf.push(0x81);
+    query_buf.push(0x8A);
+    query_buf.push(0x8B);
+    query_buf.push(get_checksum(&query_buf));
+    stream.write(&query_buf)?;
 
-    let mut buf: [u8; 14] = [0; 14];
-    stream.read(&mut buf)?;
+    let mut feedback_buf: [u8; 14] = [0; 14];
+    stream.read(&mut feedback_buf)?;
 
-    Ok(buf)
+    Ok(feedback_buf)
+}
+
+#[derive(Debug)]
+pub struct MagicHomeState {
+    pub is_enabled: bool,
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
 }
 
 #[derive(Debug)]
 pub enum MagicHomeActionError {
     NotConnected,
-    IoError(io::Error),
+    IoError(Error),
 }
 
 pub struct MagicHome {
@@ -55,26 +62,31 @@ impl MagicHome {
         Self { stream: None }
     }
 
-    pub fn connect(&mut self, addr: &str) -> Result<(), io::Error> {
+    pub fn is_connected(&self) -> bool {
+        self.stream.is_some()
+    }
+
+    pub fn connect(&mut self, addr: &str) -> Result<(), Error> {
         let stream = TcpStream::connect(addr)?;
-        let _ = get_info(&stream)?;
+        let _ = get_state(&stream)?;
         self.stream = Some(stream);
         Ok(())
     }
 
-    pub fn is_enabled(&self) -> Result<bool, MagicHomeActionError> {
+    pub fn state(&mut self) -> Result<MagicHomeState, MagicHomeActionError> {
         let stream = self
             .stream
             .as_ref()
             .ok_or(MagicHomeActionError::NotConnected)?;
 
-        let info = get_info(stream).map_err(|e| MagicHomeActionError::IoError(e))?;
-        let is_enabled = if info[2] == 0x24 { false } else { true };
-        Ok(is_enabled)
-    }
+        let state = get_state(stream).map_err(|e| MagicHomeActionError::IoError(e))?;
 
-    pub fn is_connected(&self) -> bool {
-        self.stream.is_some()
+        Ok(MagicHomeState {
+            is_enabled: state[2] != 0x24,
+            red: state[6],
+            green: state[7],
+            blue: state[8],
+        })
     }
 
     pub fn set_color(&mut self, rgb: [u8; 3]) -> Result<(), MagicHomeActionError> {
@@ -99,16 +111,14 @@ impl MagicHome {
         Ok(())
     }
 
-    pub fn on_off(&mut self) -> Result<(), MagicHomeActionError> {
+    pub fn power(&mut self, value: bool) -> Result<(), MagicHomeActionError> {
         let mut stream = self
             .stream
             .as_ref()
             .ok_or(MagicHomeActionError::NotConnected)?;
 
-        let mut buf = match self.is_enabled()? {
-            true => vec![0x71, 0x24, 0x0F],
-            false => vec![0x71, 0x23, 0x0F],
-        };
+        let power_byte = if value { 0x23 } else { 0x24 };
+        let mut buf = vec![0x71, power_byte, 0x0F];
         buf.push(get_checksum(&buf));
         stream
             .write(&buf)
