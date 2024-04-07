@@ -73,6 +73,11 @@ impl MagicHome {
         Ok(())
     }
 
+    pub fn unsafe_connect(&mut self, addr: &str) -> Result<(), Error> {
+        self.stream = Some(TcpStream::connect(addr)?);
+        Ok(())
+    }
+
     pub fn state(&mut self) -> Result<MagicHomeState, MagicHomeActionError> {
         let stream = self
             .stream
